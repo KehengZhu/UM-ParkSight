@@ -10,6 +10,8 @@ or:
 This script creates one output image per spot entry in spots.json.
 If a spot has a hexagon polygon, a masked polygon crop is saved.
 If a spot has a bbox, a rectangular crop is saved.
+Crops are written as JPG files.
+Hexagon crops can be inpainted to fill black masked areas using neighboring pixels.
 """
 
 from __future__ import annotations
@@ -43,6 +45,17 @@ def parse_args() -> argparse.Namespace:
         default="spot_segments",
         help="Directory to save per-spot crops",
     )
+    parser.add_argument(
+        "--no-fill-black",
+        action="store_true",
+        help="Disable filling black masked regions in hexagon crops",
+    )
+    parser.add_argument(
+        "--inpaint-radius",
+        type=float,
+        default=3.0,
+        help="Inpainting radius used when --fill-black is enabled",
+    )
     return parser.parse_args()
 
 
@@ -68,7 +81,33 @@ def clamp_xy(points: np.ndarray, img_w: int, img_h: int) -> np.ndarray:
     return points
 
 
-def crop_from_hexagon(image: np.ndarray, hexagon: List[List[int]]) -> Tuple[np.ndarray, Tuple[int, int, int, int]]:
+def fill_black_regions_with_inpaint(
+    segmented: np.ndarray,
+    mask: np.ndarray,
+    inpaint_radius: float,
+) -> np.ndarray:
+    """Fill masked-out black regions using neighboring non-black pixels."""
+    if segmented.size == 0:
+        return segmented
+
+    if mask.shape[:2] != segmented.shape[:2]:
+        raise ValueError("Mask shape does not match segmented image.")
+
+    # Inpaint where mask == 0 (outside polygon) to reduce black side artifacts.
+    inpaint_mask = np.where(mask == 0, 255, 0).astype(np.uint8)
+    if np.count_nonzero(inpaint_mask) == 0:
+        return segmented
+
+    filled = cv2.inpaint(segmented, inpaint_mask, float(max(inpaint_radius, 0.1)), cv2.INPAINT_TELEA)
+    return filled
+
+
+def crop_from_hexagon(
+    image: np.ndarray,
+    hexagon: List[List[int]],
+    fill_black: bool,
+    inpaint_radius: float,
+) -> Tuple[np.ndarray, Tuple[int, int, int, int]]:
     img_h, img_w = image.shape[:2]
     pts = np.asarray(hexagon, dtype=np.int32)
     if pts.ndim != 2 or pts.shape[1] != 2 or pts.shape[0] < 3:
@@ -86,6 +125,10 @@ def crop_from_hexagon(image: np.ndarray, hexagon: List[List[int]]) -> Tuple[np.n
     mask = np.zeros((h, w), dtype=np.uint8)
     cv2.fillPoly(mask, [shifted], 255)
     segmented = cv2.bitwise_and(roi, roi, mask=mask)
+
+    if fill_black:
+        segmented = fill_black_regions_with_inpaint(segmented, mask, inpaint_radius)
+
     return segmented, (x, y, w, h)
 
 
@@ -151,11 +194,16 @@ def main() -> int:
             continue
 
         spot_id = safe_spot_id(spot, idx)
-        out_path = os.path.join(args.output_dir, f"{spot_id}.png")
+        out_path = os.path.join(args.output_dir, f"{spot_id}.jpg")
 
         try:
             if "hexagon" in spot:
-                crop, rect = crop_from_hexagon(image, spot["hexagon"])
+                crop, rect = crop_from_hexagon(
+                    image,
+                    spot["hexagon"],
+                    fill_black=not args.no_fill_black,
+                    inpaint_radius=args.inpaint_radius,
+                )
             elif "bbox" in spot:
                 crop, rect = crop_from_bbox(image, spot["bbox"])
             else:
