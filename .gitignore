@@ -1,1 +1,3 @@
 .DS_Store
+report_latex/latex-build/*
+!report_latex/latex-build/report.pdf

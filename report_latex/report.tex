@@ -1,0 +1,153 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{setspace}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{graphicx}
+
+\title{\textbf{UM ParkSight: Vision-Based Parking Occupancy Estimation for U-M Lots Using Reference-Image Registration}}
+\author{Felix Sixiang Tang \and Keheng Zhu \and Kwan Ting Lau}
+\date{}
+
+\begin{document}
+
+\maketitle
+\onehalfspacing
+
+\section*{Executive Overview}
+
+UM ParkSight is a lightweight computer vision pipeline that estimates real-time parking occupancy from a single oblique-angle photograph of a parking lot. Rather than relying on embedded sensors, gate counters, or purpose-built overhead cameras, our system uses one manually annotated reference image to define parking spot regions and then transfers those regions to new photos of the same lot via learned feature matching. Each transferred region is classified as occupied or empty using a pretrained vehicle recognition model, and the per-spot results are rendered onto a top-down occupancy map. The approach is designed to be deployable at any parking lot where a single elevated vantage point is available, without new infrastructure.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.48\textwidth]{figures/reference_image.jpg}
+    \hfill
+    \includegraphics[width=0.48\textwidth]{figures/resolved_occupancy_overlay.png}
+    \caption{System overview example. Left: reference lot image used for one-time spot annotation. Right: final occupancy overlay produced by the pipeline (green: empty, red: occupied).}
+    \label{fig:overview_input_output}
+\end{figure}
+
+\section*{Background and Impact}
+
+Parking search is a well-documented contributor to urban traffic and emissions. Studies across multiple cities have found that cruising for parking can account for roughly 30\% of traffic in congested areas, with average search times of several minutes per driver \cite{shoup2006}. At the University of Michigan, the problem is familiar to any student or staff member who has circled a lot during peak hours, uncertain whether any spaces remain.
+
+Existing parking occupancy solutions fall into two groups. Gate-based counters track aggregate lot occupancy by tallying cars entering and exiting, but they do not tell drivers \emph{where} open spots are within a lot, so drivers still cruise internally. Per-space sensor systems (in-ground magnetometers, overhead ultrasonics) provide granular occupancy but require significant hardware installation and maintenance, which many smaller or older lots cannot justify.
+
+UM ParkSight targets the gap between these options. A single camera mounted on or near an existing building, combined with a one-time manual calibration of spot locations, can produce per-space occupancy information comparable to sensor arrays at a fraction of the cost. The intended impact is twofold: reduced cruising time and associated emissions for drivers, and a low-barrier path for under-instrumented lots (including many U-M surface lots) to provide real-time availability data.
+
+\section*{Method}
+
+Our pipeline consists of four stages:
+
+\begin{enumerate}[leftmargin=1.5em]
+    \item \textbf{Reference annotation.} A single elevated oblique photograph of the target lot is captured, taken from a nearby building at roughly 45 degrees above horizontal. Each of the approximately 32 parking spots visible in this reference image is manually outlined as a quadrilateral region. This annotation is performed once per lot and stored as a JSON file of spot polygons.
+
+    \item \textbf{Reference-to-query registration via LoFTR.} For each new query image of the same lot (potentially captured from a slightly different position, zoom, or time of day), we use LoFTR, a detector-free local feature transformer \cite{sun2021loftr}, to establish dense correspondences between the reference and the query. LoFTR is well-suited to this task because it produces semi-dense matches even in low-texture regions such as asphalt and painted lines, where classical detectors like SIFT often fail. From the matched correspondences we estimate a homography mapping reference-image coordinates to query-image coordinates, then warp each annotated spot polygon into the query frame.
+
+    \item \textbf{Per-spot occupancy classification.} Each warped polygon is cropped from the query image and passed to a pretrained car recognition model (the Stanford\_Car model on Roboflow Universe \cite{roboflow_stanford_car}). We treat the model as a car-presence detector: if the model returns a confident prediction on the crop, the spot is classified as occupied; otherwise it is marked empty. This reframing lets us leverage a well-trained fine-grained car classifier without requiring our own lot-specific training data, which would be infeasible to collect at the scale the classifier was originally trained on.
+
+    \item \textbf{Top-down occupancy map.} The per-spot results are projected onto a schematic 2D map of the lot, with each stall rendered green (available) or red (occupied) (see Fig \ref{fig:2d_map}). This view is the end-user-facing artifact, designed to be glanceable from a phone before or during a parking attempt.
+\end{enumerate}
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.64\textwidth]{figures/loftr_matches_query.jpg}
+    \hfill
+    \includegraphics[width=0.32\textwidth]{figures/registration_overlay.jpg}
+    \caption{Reference-to-query registration details. Left: LoFTR correspondence visualizations on reference and query images. Right: alignment overlay after homography warping.}
+    \label{fig:loftr_registration_details}
+\end{figure}
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.31\textwidth]{figures/spot_occupied_example.jpg}
+    \hfill
+    \includegraphics[width=0.31\textwidth]{figures/spot_empty_example.jpg}
+    \hfill
+    \includegraphics[width=0.31\textwidth]{figures/spot_borderline_example.jpg}
+    \caption{Per-spot crop examples used for occupancy inference: occupied, empty, and borderline cases.}
+    \label{fig:spot_crop_examples}
+\end{figure}
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.6\textwidth]{figures/2D_map.png}
+    \caption{2D glanceable map.}
+    \label{fig:2d_map}
+\end{figure}
+
+\section*{Prototype}
+
+Our initial approach was substantially different. We first attempted direct car detection on oblique lot photos using several pretrained object detectors available through Roboflow, intending to pair detections with a homography-based projection onto a known lot map. Detection performance was poor across every model we tried. We attribute this to a domain mismatch: most publicly available car detectors are trained on street-level, dashcam, or near-horizontal imagery, and they generalize poorly to the steep oblique views of densely packed, partially occluded vehicles that our scenario produces.
+
+We then explored automatically extracting parking spot boundaries from painted lines, but the lines in our reference imagery were frequently occluded by vehicles, shadowed, or faded, making robust line detection unreliable.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.48\textwidth]{figures/prototype_direct_detection_failure.jpg}
+    \hfill
+    \includegraphics[width=0.48\textwidth]{figures/prototype_line_detection_failure.png}
+    \caption{Prototype-stage failure modes. Left: direct vehicle detection on oblique scenes produced unstable results. Right: line-based parking boundary extraction was unreliable under occlusion and degraded markings.}
+    \label{fig:prototype_failures}
+\end{figure}
+
+The insight that led to the current design was that, while detecting cars \emph{in context} is difficult, classifying \emph{whether a tight crop contains a car} is much easier, because fine-grained car classifiers are trained on exactly that kind of framed, centered imagery. This shifted the problem from ``find the cars'' to ``find the spots, then ask about each spot,'' which in turn only required solving the registration problem between a reference image and a query. Manual annotation of the reference is a one-time cost per lot and, in a deployed setting, a reasonable calibration step.
+
+The current prototype is implemented in Python using the official LoFTR weights for feature matching, OpenCV for homography estimation and warping, and the Roboflow inference API for the classification stage. We evaluate on a small set of query images of the same lot captured at different occupancy levels.
+
+\section*{Results}
+
+We ran the complete notebook pipeline (alignment, interactive spot translation, per-spot cropping, detector inference, and rule-based occupancy resolution) on representative query images from the same lot. Figure \ref{fig:segment_detection_grid} shows the crop-level detector outputs used as inputs to final occupancy decisions, and Figure \ref{fig:multi_image_overlays} shows registration overlays for two additional query images.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.92\textwidth]{figures/segment_detection_grid.png}
+    \caption{Per-spot detection grid generated by the notebook pipeline. Each tile corresponds to one parking spot crop with detector predictions overlaid.}
+    \label{fig:segment_detection_grid}
+\end{figure}
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.48\textwidth]{figures/result_overlay_img3287.jpg}
+    \hfill
+    \includegraphics[width=0.48\textwidth]{figures/result_overlay_img3375.jpg}
+    \caption{Additional registration overlays on two query images, demonstrating consistent transfer of reference geometry across viewpoints and occupancy levels.}
+    \label{fig:multi_image_overlays}
+\end{figure}
+
+For the resolved output stored in \texttt{parksight\_output/resolved\_occupancy.json}, the system processed 29 parking spots, labeling 16 as occupied and 13 as empty, corresponding to a measured occupancy rate of 55.17\%. The mean confidence among occupied spots was 0.985, and all occupied spots in this run passed the strict center-and-area gate. Among strict-pass occupied spots, the mean bounding-box area ratio was 0.937.
+
+\begin{table}[htbp]
+    \centering
+    \begin{tabular}{l r}
+        \hline
+        Metric & Value \\
+        \hline
+        Total evaluated spots & 29 \\
+        Occupied spots & 16 \\
+        Empty spots & 13 \\
+        Occupancy rate & 55.17\% \\
+        Mean occupied confidence & 0.985 \\
+        Strict-pass occupied spots & 16 / 16 \\
+        Mean area ratio (strict-pass occupied) & 0.937 \\
+        \hline
+    \end{tabular}
+    \caption{Descriptive summary from the resolved occupancy output of a representative run.}
+    \label{tab:results_summary}
+\end{table}
+
+These results demonstrate that the pipeline can consistently propagate spot geometry and produce stable occupancy decisions in this scene. However, because this prototype run does not include manually labeled ground-truth occupancy for each query image, we report descriptive operational metrics rather than supervised metrics such as precision, recall, and F1. A larger benchmark set with spot-level labels is the next step for rigorous evaluation.
+
+\section*{Conclusion}
+
+UM ParkSight demonstrates that per-space parking occupancy estimation can be achieved using only a single elevated camera view, one-time manual annotation, and learned image registration. By replacing specialized parking hardware with a lightweight vision pipeline, the system offers a practical path toward scalable, low-cost lot monitoring. Future work will focus on larger-scale evaluation, robustness under lighting and weather changes, and improving the occupancy classifier for ambiguous or partially occluded crops.
+
+\bibliographystyle{plain}
+\bibliography{references}
+
+\end{document}
